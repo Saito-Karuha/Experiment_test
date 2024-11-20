@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Union
 
 
 def extract_ground_truth(solution: str) -> Optional[str]:
-    # 使用平衡括号的方法提取内容
+    # 使用平衡括号的方法提取被 \\boxed{} 所包含的答案
     def find_matching_brace(s: str, start: int) -> int:
         """找到匹配的右括号位置"""
         count = 1
@@ -126,7 +126,37 @@ def select_random_problem(
 
     return selected_problems
 
+def r_sparse(action:str, groundTruth:str):
+    '''其实就是判断action是否结束了以及答案是否正确啦'''
+    ans_action = extract_ground_truth(action)
+    if ans_action == None:
+        done = False # stop用于判断action是否执行结束
+        reward_sparse = 0.0
+    else:
+        done = True
+        reward_sparse = 1.0 if ans_action == groundTruth else 0.0
+    return reward_sparse, done
 
+class Env():
+    '''建立一个class, 把上面的方法整合'''
+    def __init__(self, dataset_directory:str):
+        self.math_dataset = load_math_dataset(dataset_directory)
+
+    def sample(self, split:str="train", num_problems:int=1):
+        problems = select_random_problem(self.math_dataset, split, num_problems)
+        # 这里的problems是一个包含字典的列表, 有用的key有'problem', 'ground_truth'
+        problems_simplify = []
+        for i in range(len(problems)):
+            problems_simplify.append({'problem':problems[i]['problems'], 'ground_truth':problems[i]['ground_truth']})
+        return problems_simplify
+
+    def step(self, state:str, action:str, groundTruth:str):
+        reward, done = r_sparse(action, groundTruth)
+        next_state = state + action
+        return reward, next_state, done
+
+
+"""
 # 使用示例
 if __name__ == "__main__":
     # 初始化数据集（只需要执行一次）
@@ -155,4 +185,4 @@ if __name__ == "__main__":
         print(f"Type: {problem['type']}")
         print(f"Level: {problem['level']}")
         print(f"Ground Truth: {problem['ground_truth']}")
-        print("-" * 80)
+        print("-" * 80) """
