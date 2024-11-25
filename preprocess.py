@@ -147,7 +147,7 @@ class Env():
         # 这里的problems是一个包含字典的列表, 有用的key有'problem', 'ground_truth'
         problems_simplify = []
         for i in range(len(problems)):
-            problems_simplify.append({'problem':problems[i]['problems'], 'ground_truth':problems[i]['ground_truth']})
+            problems_simplify.append({'problem':problems[i]['problem'], 'ground_truth':problems[i]['ground_truth']})
         return problems_simplify
 
     def step(self, state:str, action:str, groundTruth:str):
