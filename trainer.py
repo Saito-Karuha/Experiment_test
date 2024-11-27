@@ -65,6 +65,7 @@ def create_lora_optimizer(model, learning_rate=1e-4, weight_decay=0.01, betas=(0
 
 
 def train(actor_config:dict, critic_config:dict, epoch:int, dataset_dir:str, max_reason_length:int):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # 首先做一个initialize(包括 target net和普通的更新目标)
     critic = CriticNet(base_model=critic_config['base_model'], cache_dir=critic_config["cache_dir"])
     actor = ActionNet(base_model=actor_config['base_model'], cache_dir=actor_config['cache_dir'],
@@ -123,12 +124,12 @@ def train(actor_config:dict, critic_config:dict, epoch:int, dataset_dir:str, max
         # 进行经验回放进行训练
         if buffer.size() >= minimal_size:
             replay_set = buffer.sample(batch_size)  # 结构大致为[(s1,a,r,s2,q),(...)...]
-            L, J = torch.tensor([0], dtype=torch.float32), torch.tensor([0], dtype=torch.float32)  # 损失函数
+            L, J = torch.tensor([0], dtype=torch.float32, device=device), torch.tensor([0], dtype=torch.float32, device=device)  # 损失函数
             for i in range(batch_size):
                 s1, a, r, s2, q = replay_set[i]
                 ans = actor_target.forward(question=q, pre_reasoning=s2, num_gen=8)
                 ans = ans['nl_response']  # 这里固定的在 8个 action之中去找最大值, ans=[str1,str2,...]
-                value_batch = torch.zeros((len(ans),)).to(torch.float32)  # [v1,v2,...]
+                value_batch = torch.zeros((len(ans),), dtype=torch.float32).to(device)  # [v1,v2,...]
                 for j in range(len(ans)):
                     value_batch[j] = (critic_target.forward(q + "\nSolution:\n" + s2 + ans[j])[0][0])
                 value_batch.detach_()  # 分离计算图
