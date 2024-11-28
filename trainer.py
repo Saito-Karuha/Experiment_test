@@ -14,9 +14,10 @@ from preprocess import *
 from replaybuffer import *
 import torch
 
-actor_config = {"base_model": r"peiyi9979/mistral-7b-sft", "cache_dir": r"E:\HUGGINGFACE_HUB_CACHE",
+
+actor_config = {"base_model": r"peiyi9979/mistral-7b-sft", "cache_dir": "./models--peiyi9979--mistral-7b-sft",
                 "chat_template": r"{% if messages[0]['role'] == 'system' %}{% set loop_messages = messages[1:] %}{% else %}{% set loop_messages = messages %}{% endif %}{% for message in loop_messages %}{% if message['role'] == 'user' %}{{ '<s> ' + message['content'] }}{% elif message['role'] == 'assistant' %}{{ message['content'] + eos_token }}{% endif %}{% endfor %}"}
-critic_config = {'base_model': r"meta-math/MetaMath-Mistral-7B", "cache_dir": r"E:\HUGGINGFACE_HUB_CACHE"}
+critic_config = {'base_model': r"meta-math/MetaMath-Mistral-7B", "cache_dir": "./models--meta-math--MetaMath-Mistral-7B"}
 
 # 设置目标网络(actor, critic)的更新函数 (这里使用 Soft Update来进行)
 def soft_update_actor(actor, actor_target, tau=0.005):
@@ -67,9 +68,9 @@ def create_lora_optimizer(model, learning_rate=1e-4, weight_decay=0.01, betas=(0
 def train(actor_config:dict, critic_config:dict, epoch:int, dataset_dir:str, max_reason_length:int):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # 首先做一个initialize(包括 target net和普通的更新目标)
-    critic = CriticNet(base_model=critic_config['base_model'], cache_dir=critic_config["cache_dir"])
+    critic = CriticNet(base_model=critic_config['base_model'], cache_dir=critic_config["cache_dir"], device="cuda")
     actor = ActionNet(base_model=actor_config['base_model'], cache_dir=actor_config['cache_dir'],
-                      chat_template=actor_config['chat_template'])
+                      chat_template=actor_config['chat_template'], device="cuda")
     critic_target = CriticNet(base_model=critic_config['base_model'], cache_dir=critic_config["cache_dir"])
     actor_target = ActionNet(base_model=actor_config['base_model'], cache_dir=actor_config['cache_dir'],
                       chat_template=actor_config['chat_template'])
@@ -170,3 +171,9 @@ def train(actor_config:dict, critic_config:dict, epoch:int, dataset_dir:str, max
             'Avg Critic Loss': f'{avg_critic_loss:.4f}',
             'Avg Actor Loss': f'{avg_actor_loss:.4f}'
         })
+
+    critic.save_model("critic_model.pt")
+    actor.save_model("action_model")
+
+if __name__ == "__main__":
+    train(actor_config, critic_config, 5000, './MATH', 8)

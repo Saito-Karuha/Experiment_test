@@ -6,9 +6,9 @@ class ReplayBuffer:
         # 初始化经验回放池，使用deque来存储
         self.buffer = deque(maxlen=capacity)
 
-    def add(self, state, action, reward, next_state):
+    def add(self, state, action, reward, next_state, question):
         # 向缓冲区添加一个新的经验
-        self.buffer.append((state, action, reward, next_state))
+        self.buffer.append((state, action, reward, next_state, question))
 
     def sample(self, batch_size):
         # 从缓冲区中随机抽取 batch_size 个样本

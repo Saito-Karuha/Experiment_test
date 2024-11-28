@@ -7,22 +7,38 @@ class CriticNet(torch.nn.Module):
     这里的Critic-Net从Sparse Signals中训练而来,
     base_model选用MetaMath-Mistral-7b,所以下面的代码全部都服务于这个模型，其他模型不可用；
     cache_dir表示模型路径'''
-    def __init__(self, base_model:str, cache_dir:str): # 更改模型
+    def __init__(self, base_model:str, cache_dir:str, device:str="cpu"): # 更改模型
         super().__init__()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.base_model = AutoModel.from_pretrained(base_model, cache_dir=cache_dir).to(self.device)
-        self.tokenizer = AutoTokenizer.from_pretrained(base_model, cache_dir=cache_dir)
+        self.device = torch.device(device)
+        self.base_model = AutoModel.from_pretrained(cache_dir, trust_remote_code=True).half().to(self.device) #######
+        self.tokenizer = AutoTokenizer.from_pretrained(cache_dir, trust_remote_code=True, use_fast=False) #########
         self.config = self.base_model.config
         self.hidden_size = self.config.hidden_size
-        self.pad_token_id = self.config.pad_token_id # [PAD] 32000
-        self.eos_token_id = self.config.eos_token_id # <s> 1
-        self.bos_token_id = self.config.bos_token_id # </s> 2
+        self.pad_token_id = self.tokenizer.pad_token_id # [PAD] 32000
+        self.eos_token_id = self.tokenizer.eos_token_id # <s> 1
+        self.bos_token_id = self.tokenizer.bos_token_id # </s> 2
         # 输出层，将最后最后一个token的表示用mlp转化为对应的PRM分数
         # 这里的输入数据格式必须符合"Step 1:....ки\n Step 2:...ки\n"以此类推，注意为满足这样的格式，actorNet可能需要微调
         self.v_head_mlp1 = torch.nn.Linear(self.hidden_size, 1024, bias=False).to(self.device)
         self.v_head_mlp2 = torch.nn.Linear(1024, 512, bias=False).to(self.device)
         self.v_head_mlp3 = torch.nn.Linear(512, 1, bias=False).to(self.device)
         self.relu = torch.nn.ReLU()
+
+    def save_model(self, save_path: str):
+        """保存模型参数"""
+        state_dict = {
+            'v_head_mlp1': self.v_head_mlp1.state_dict(),
+            'v_head_mlp2': self.v_head_mlp2.state_dict(),
+            'v_head_mlp3': self.v_head_mlp3.state_dict()
+        }
+        torch.save(state_dict, save_path)
+
+    def load_model(self, load_path: str):
+        """加载模型参数"""
+        state_dict = torch.load(load_path, map_location=self.device)
+        self.v_head_mlp1.load_state_dict(state_dict['v_head_mlp1'])
+        self.v_head_mlp2.load_state_dict(state_dict['v_head_mlp2'])
+        self.v_head_mlp3.load_state_dict(state_dict['v_head_mlp3'])
 
     def get_trainable_parameters(self):
         return [
@@ -37,8 +53,9 @@ class CriticNet(torch.nn.Module):
         新更正: 现在把 forward改为接收字符串直接输出, text是 question+"\nSolution:\n"+pre_reasoning'''
         with torch.no_grad():
             tokenized_sentence = self.tokenizer(text, return_tensors='pt')
-            input_ids = tokenized_sentence['input_ids'].to(self.device)
-            attention_mask = tokenized_sentence['attention_mask'].to(self.device)
+            tokenized_sentence = {k: v.to(self.device) for k, v in tokenized_sentence.items()}  # 添加这行
+            input_ids = tokenized_sentence['input_ids']
+            attention_mask = tokenized_sentence['attention_mask']
             baseModel_outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask)
             baseModel_outputs = baseModel_outputs.last_hidden_state[:,-1,:] # shape:(句子数,self.hidden_size)
         # 上面输出的 dtype=torch.float32
@@ -53,10 +70,10 @@ class ActionNet(torch.nn.Module):
     Step 1: <content> ки\nStep 2 ,,,以此类推; 注意<content>中可以包含\n, 我们真正需要的 step-tag是 'ки\n'
     (但是还是建议加上 verifier防止训练时炸掉)'''
 
-    def __init__(self, base_model: str, cache_dir: str, chat_template: str):
+    def __init__(self, base_model: str, cache_dir: str, chat_template: str, device:str="cpu"):
         super().__init__()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.base_model = AutoModelForCausalLM.from_pretrained(base_model, cache_dir=cache_dir).to(self.device)
+        self.device = torch.device(device)
+        self.base_model = AutoModelForCausalLM.from_pretrained(cache_dir).half().to(self.device)
 
         config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
@@ -67,13 +84,21 @@ class ActionNet(torch.nn.Module):
             lora_dropout=0.1  # Dropout 比例
         )
         self.base_model = get_peft_model(self.base_model, config).to(self.device)
-        self.tokenizer = AutoTokenizer.from_pretrained(base_model, chat_template=chat_template,
-                                                       cache_dir=cache_dir)
+        self.tokenizer = AutoTokenizer.from_pretrained(cache_dir, chat_template=chat_template)
         self.chat_template = chat_template
         self.special_tag = 'ки'
         self.special_tag_id = self.tokenizer.encode(self.special_tag)[1]  # 12902
 
         self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
+    def save_model(self, save_path: str):
+        """保存 LoRA 模型参数"""
+        self.base_model.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+
+    def load_model(self, load_path: str):
+        """加载 LoRA 模型参数"""
+        self.base_model.load_adapter(load_path)
 
     def forward(self, question: str = None, pre_reasoning: str = None, num_gen: int = 1, if_return_logits: bool = True):
         '''前向推理函数，生成下一步的推理
@@ -86,6 +111,7 @@ class ActionNet(torch.nn.Module):
         else:
                  inputs =  "system: Please reason step by step, and put your final answer within \\boxed{}.\n" + question + "\nSolution:\n" + pre_reasoning
         model_inputs = self.tokenizer([inputs], return_tensors='pt')
+        model_inputs = {k: v.to(self.device) for k, v in model_inputs.items()}  # 添加这行
         generated_ids = self.base_model.generate(
             **model_inputs,
             temperature=0.5,
@@ -102,7 +128,7 @@ class ActionNet(torch.nn.Module):
         nl_response = []
         log_probs = []
         origin_logits = []
-        input_length = len(model_inputs.input_ids[0])
+        input_length = len(model_inputs["input_ids"][0])
 
         for i in range(len(generated_ids)):
             # 获取生成的序列（不包含输入序列）
