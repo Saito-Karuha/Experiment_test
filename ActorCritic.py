@@ -57,11 +57,12 @@ class CriticNet(torch.nn.Module):
             input_ids = tokenized_sentence['input_ids']
             attention_mask = tokenized_sentence['attention_mask']
             baseModel_outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask)
-            baseModel_outputs = baseModel_outputs.last_hidden_state[:,-1,:] # shape:(句子数,self.hidden_size)
+            baseModel_outputs = baseModel_outputs.last_hidden_state[:,-1,:].float() # shape:(句子数,self.hidden_size)
         # 上面输出的 dtype=torch.float32
         x = self.relu(self.v_head_mlp1(baseModel_outputs))
         x = self.relu(self.v_head_mlp2(x))
         x = self.v_head_mlp3(x) # shape:(句子数,1)
+        x = torch.nn.functional.sigmoid(x)
         return x
 
 
@@ -73,7 +74,7 @@ class ActionNet(torch.nn.Module):
     def __init__(self, base_model: str, cache_dir: str, chat_template: str, device:str="cpu"):
         super().__init__()
         self.device = torch.device(device)
-        self.base_model = AutoModelForCausalLM.from_pretrained(cache_dir).half().to(self.device)
+        self.base_model = AutoModelForCausalLM.from_pretrained(cache_dir, pad_token_id=2).half().to(self.device)
 
         config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
@@ -84,7 +85,7 @@ class ActionNet(torch.nn.Module):
             lora_dropout=0.1  # Dropout 比例
         )
         self.base_model = get_peft_model(self.base_model, config).to(self.device)
-        self.tokenizer = AutoTokenizer.from_pretrained(cache_dir, chat_template=chat_template)
+        self.tokenizer = AutoTokenizer.from_pretrained(cache_dir, chat_template=chat_template, pad_token_id=2)
         self.chat_template = chat_template
         self.special_tag = 'ки'
         self.special_tag_id = self.tokenizer.encode(self.special_tag)[1]  # 12902
@@ -100,7 +101,7 @@ class ActionNet(torch.nn.Module):
         """加载 LoRA 模型参数"""
         self.base_model.load_adapter(load_path)
 
-    def forward(self, question: str = None, pre_reasoning: str = None, num_gen: int = 1, if_return_logits: bool = True):
+    def forward(self, question: str = None, pre_reasoning: str = None, num_gen: int = 1, if_return_logits: bool = False):
         '''前向推理函数，生成下一步的推理
         (question, pre_reasoning)都是字符串, 即自然语言形式表述的问题以及前述推理步骤, num_gen表示生成数
         返回值, 'response_ids':下一步推理的 id_tensor:[tensor1,tensor2,...], 'nl_response':[str1,str2,...]
@@ -117,7 +118,7 @@ class ActionNet(torch.nn.Module):
             temperature=0.5,
             do_sample=True,
             num_return_sequences=num_gen,
-            max_new_tokens=512,
+            max_new_tokens=256,
             return_dict_in_generate=True,
             eos_token_id=[self.tokenizer.eos_token_id, self.special_tag_id]
         )  # 会生成一个列表, 大小是[num_gen,文本长度+Pad]
@@ -183,9 +184,11 @@ class ActionNet(torch.nn.Module):
         prefix = "system: Please reason step by step, and put your final answer within \\boxed{}.\n" + question + "\nSolution:\n" + pre_reasoning
         text = prefix + action_took
         prefix_inputs = self.tokenizer([prefix], return_tensors='pt')
+        prefix_inputs = {k: v.to(self.device) for k, v in prefix_inputs.items()}
         prefix_length = len(prefix_inputs['input_ids'][0])
         inputs = self.tokenizer([text], return_tensors='pt')
-        logits = self.base_model(input_ids=inputs['input_ids'], attention_mask=torch.ones_like(inputs['input_ids']),
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        logits = self.base_model(input_ids=inputs['input_ids'], attention_mask=torch.ones_like(inputs['input_ids']).to(self.device),
                                  return_dict=True).logits[0][prefix_length-1:,:]
         probs = torch.nn.functional.softmax(logits, dim=-1)
         logits_word = torch.gather(probs, dim=-1, index=inputs['input_ids'][0][prefix_length:].unsqueeze(-1)).squeeze(-1)
